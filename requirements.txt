@@ -1,0 +1,10 @@
+yfinance
+pandas
+sqlalchemy
+requests
+pyyaml
+python-dotenv
+asyncio
+schedule
+matplotlib
+backtrader
