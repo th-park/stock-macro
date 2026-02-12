@@ -71,7 +71,13 @@ Yahoo Finance에서 데이터를 가져와 DB에 저장합니다.
 python -m app.data_collector
 ```
 
-### 4.3 백테스팅 실행
+### 4.3 데이터 시각화 (대시보드) 실행
+수집된 데이터를 웹 브라우저에서 그래프로 확인합니다.
+```bash
+streamlit run app/dashboard.py
+```
+
+### 4.4 백테스팅 실행
 저장된 데이터를 기반으로 전략을 테스트합니다.
 ```bash
 python -m app.backtester.engine

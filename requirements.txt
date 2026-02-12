@@ -8,3 +8,5 @@ asyncio
 schedule
 matplotlib
 backtrader
+streamlit
+plotly
