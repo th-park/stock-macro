@@ -1,7 +1,7 @@
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
-from app.database import get_db
+from app.database import SessionLocal
 from app.models.stock_data import StockData
 from app.config import Config
 from sqlalchemy.exc import IntegrityError
@@ -35,44 +35,56 @@ class DataCollector:
             return []
 
     def save_to_db(self, ticker, df):
-        db = next(get_db())
-        data_to_insert = []
-        
-        for index, row in df.iterrows():
-            timestamp = index.to_pydatetime()
-            if timestamp.tzinfo:
-                timestamp = timestamp.replace(tzinfo=None) # Make naive for simplicity in SQLite
-            
-            # Check if data already exists (basic check)
-            # For better performance, use bulk insert with on_conflict_do_nothing
-            # But here we will collect objects and try to insert them.
-            # SQLAlchemy ORM doesn't support "INSERT IGNORE" easily across all DBs without specific dialect usage.
-            # We will use a simple check for now or just try/except block efficiently.
-            
-            existing = db.query(StockData).filter_by(ticker=ticker, timestamp=timestamp).first()
-            if not existing:
-                stock_data = StockData(
-                    ticker=ticker,
-                    timestamp=timestamp,
-                    open=row['Open'],
-                    high=row['High'],
-                    low=row['Low'],
-                    close=row['Close'],
-                    volume=row['Volume']
-                )
-                db.add(stock_data)
+        with SessionLocal() as db:
+            if df.empty:
+                return
 
-        try:
-            db.commit()
-            print(f"Committed new records for {ticker}")
-        except Exception as e:
-            db.rollback()
-            print(f"Error committing to DB: {e}")
+            # Prepare data
+            records_to_insert = []
+            min_time = df.index.min().to_pydatetime().replace(tzinfo=None)
+            max_time = df.index.max().to_pydatetime().replace(tzinfo=None)
+
+            # Bulk check existing records for this ticker and time range
+            existing_records = db.query(StockData.timestamp).filter(
+                StockData.ticker == ticker,
+                StockData.timestamp >= min_time,
+                StockData.timestamp <= max_time
+            ).all()
+            
+            existing_timestamps = {r[0] for r in existing_records}
+
+            for index, row in df.iterrows():
+                timestamp = index.to_pydatetime()
+                if timestamp.tzinfo:
+                    timestamp = timestamp.replace(tzinfo=None)
+                
+                if timestamp not in existing_timestamps:
+                    stock_data = StockData(
+                        ticker=ticker,
+                        timestamp=timestamp,
+                        open=row['Open'],
+                        high=row['High'],
+                        low=row['Low'],
+                        close=row['Close'],
+                        volume=row['Volume']
+                    )
+                    records_to_insert.append(stock_data)
+
+            if records_to_insert:
+                try:
+                    db.bulk_save_objects(records_to_insert)
+                    db.commit()
+                    print(f"Committed {len(records_to_insert)} new records for {ticker}")
+                except Exception as e:
+                    db.rollback()
+                    print(f"Error committing to DB: {e}")
+            else:
+                print(f"No new records to commit for {ticker}")
 
     def run(self):
         for ticker in self.tickers:
-            # 1m data is limited to 30d max in yfinance
-            df = self.fetch_data(ticker, period="1mo", interval="1m")
+            # 1m data is limited to 7-8 days max in yfinance per request
+            df = self.fetch_data(ticker, period="7d", interval="1m")
             if not isinstance(df, list) and not df.empty:
                 self.save_to_db(ticker, df)
                 
