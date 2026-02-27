@@ -6,6 +6,7 @@ from app.models.stock_data import StockData
 from app.config import Config
 import sqlalchemy
 import yfinance as yf
+from plotly.subplots import make_subplots
 
 st.set_page_config(layout="wide", page_title="Stock Data Viewer")
 
@@ -64,18 +65,33 @@ def get_daily_data(ticker):
         return pd.DataFrame()
 
 
+def calculate_rsi(data, window=14):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+
 # Sidebar for controls
 st.sidebar.header("Settings")
 tickers = get_tickers()
+
 if not tickers:
-    st.warning("No data found in database. Please run the data collector first.")
-else:
-    selected_ticker = st.sidebar.selectbox("Select Ticker", tickers)
-    
-    # Timeframe selection
-    timeframe = st.sidebar.radio("Timeframe", ["Intraday (1m, DB)", "Daily (1d, Live)"])
-    
-    if selected_ticker:
+    tickers = ["AAPL", "MSFT", "GOOGL"] # Provide some fallback options if DB is empty
+
+selected_db_ticker = st.sidebar.selectbox("Select Ticker from Database", tickers)
+
+st.sidebar.markdown("---")
+custom_ticker = st.sidebar.text_input("...or Enter Custom Ticker", placeholder="e.g., TSLA, NVDA")
+
+# Determine which ticker to use
+selected_ticker = custom_ticker.upper() if custom_ticker else selected_db_ticker
+
+# Timeframe selection
+timeframe = st.sidebar.radio("Timeframe", ["Intraday (1m, DB)", "Daily (1d, Live)"])
+
+if selected_ticker:
         # Load Data based on timeframe
         if timeframe == "Daily (1d, Live)":
             df = get_daily_data(selected_ticker)
@@ -98,51 +114,68 @@ else:
             else:
                 df['ts_str'] = df['timestamp'].apply(lambda x: x.strftime('%Y-%m-%d %H:%M:%S'))
 
-            # CandleStick Chart
-            fig = go.Figure(data=[go.Candlestick(
+            # Prepare Figure with Subplots (Row 1: Price, Row 2: RSI)
+            fig = make_subplots(
+                rows=2, cols=1, 
+                shared_xaxes=True, 
+                vertical_spacing=0.05, 
+                row_heights=[0.7, 0.3],
+                subplot_titles=(chart_title, "RSI (14)")
+            )
+
+            # CandleStick Chart (Row 1)
+            fig.add_trace(go.Candlestick(
                 x=df['ts_str'],
                 open=df['open'],
                 high=df['high'],
                 low=df['low'],
                 close=df['close'],
                 name=selected_ticker
-            )])
+            ), row=1, col=1)
+
+            # Add Moving Averages only for Daily view (Row 1)
+            if timeframe == "Daily (1d, Live)":
+                df['ma20'] = df['close'].rolling(window=20).mean()
+                df['ma60'] = df['close'].rolling(window=60).mean()
+                df['ma200'] = df['close'].rolling(window=200).mean()
+                
+                fig.add_trace(go.Scatter(x=df['ts_str'], y=df['ma20'], name='MA20', line=dict(color='orange', width=1.5)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df['ts_str'], y=df['ma60'], name='MA60', line=dict(color='green', width=1.5)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df['ts_str'], y=df['ma200'], name='MA200', line=dict(color='red', width=1.5)), row=1, col=1)
+
+                # Add RSI (Row 2)
+                df['rsi'] = calculate_rsi(df['close'])
+                fig.add_trace(go.Scatter(x=df['ts_str'], y=df['rsi'], name='RSI', line=dict(color='purple', width=1.5)), row=2, col=1)
+                
+                # Add RSI threshold lines
+                fig.add_hline(y=70, line_dash="dash", line_color="red", line_width=1, row=2, col=1)
+                fig.add_hline(y=30, line_dash="dash", line_color="green", line_width=1, row=2, col=1)
 
             # Add vertical lines for day separation only for intraday
             if timeframe == "Intraday (1m, DB)":
                 df['date_str'] = df['timestamp'].dt.strftime('%Y-%m-%d')
                 unique_dates = df['date_str'].unique()
                 
-                # Find the indices where the date changes
-                # We iterate through dates and find the first index of each new date (except the first one)
                 for date in unique_dates[1:]:
-                    # Find the first occurrence of this date
-                    idx = df[df['date_str'] == date].index[0]
-                    # In a categorical axis with pandas dataframe source, plotly uses the value itself or index. 
-                    # When type='category', plotly maps x values to integers 0, 1, 2... based on their order.
-                    # If we passed the column directly, plotly uses the values.
-                    # To place a line *between* days, we might simply use the timestamp value of the first record of the new day.
-                    
                     first_record_of_day = df[df['date_str'] == date].iloc[0]['ts_str']
-                    
                     fig.add_vline(
                         x=first_record_of_day, 
                         line_width=1, 
                         line_dash="dash", 
                         line_color="red",
-                        opacity=0.8
+                        opacity=0.8,
+                        row=1, col=1
                     )
 
             fig.update_layout(
-                title=chart_title,
                 yaxis_title='Stock Price',
-                xaxis_title='Date',
+                yaxis2_title='RSI',
                 xaxis_rangeslider_visible=False,
-                height=600
+                height=800,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
 
             # Hide gaps (non-trading hours/weekends) by using category axis
-            # We format the tick labels to ensure they are readable
             fig.update_xaxes(
                 type='category',
                 tickmode='auto',
@@ -155,4 +188,6 @@ else:
             with st.expander("View Raw Data"):
                 st.dataframe(df.sort_values(by='timestamp', ascending=False))
         else:
-            st.info("No data available for this ticker or timeframe.")
+            st.warning(f"No {timeframe.split()[0].lower()} data available for **{selected_ticker}**.")
+            if timeframe == "Intraday (1m, DB)":
+                st.info("Intraday data requires the ticker to be tracked by the data collector and saved in the database.")

@@ -13,7 +13,8 @@ class Config:
     MIRAE_ACCOUNT_NO = os.getenv("MIRAE_ACCOUNT_NO", "")
     
     # Data Collection
-    TARGET_TICKERS = ["AAPL", "TSLA", "NVDA", "SPY", "QQQ", "TQQQ", "SOXL"] # Default tickers
+    TARGET_TICKERS = ["AAPL", "TSLA", "NVDA", "GOOG", "MSFT", "AMZN", "META", "AVGO", 
+                      "AMD", "PLTR", "TSMC", "MU", "ASML", "CRDO", "CLS", "TLN", "VST", "SPY", "QQQ", "TQQQ", "SOXL"] # Default tickers
     DATA_START_DATE = "2022-01-01" # Approx 2 years ago, will be calculated dynamically
     
     # Backtest
