@@ -5,6 +5,7 @@ from app.database import SessionLocal
 from app.models.stock_data import StockData
 from app.config import Config
 import sqlalchemy
+import yfinance as yf
 
 st.set_page_config(layout="wide", page_title="Stock Data Viewer")
 
@@ -37,6 +38,32 @@ def get_data(ticker):
             return pd.DataFrame()
 
 
+@st.cache_data(ttl=3600)
+def get_daily_data(ticker):
+    try:
+        ticker_obj = yf.Ticker(ticker)
+        df = ticker_obj.history(period="max", interval="1d")
+        if not df.empty:
+            df = df.reset_index()
+            # Standardize column names to match DB format for the chart
+            df = df.rename(columns={
+                'Date': 'timestamp', 
+                'Open': 'open', 
+                'High': 'high', 
+                'Low': 'low', 
+                'Close': 'close', 
+                'Volume': 'volume'
+            })
+            # Ensure timestamp has no timezone for consistency
+            if df['timestamp'].dt.tz is not None:
+                df['timestamp'] = df['timestamp'].dt.tz_localize(None)
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error fetching daily data: {e}")
+        return pd.DataFrame()
+
+
 # Sidebar for controls
 st.sidebar.header("Settings")
 tickers = get_tickers()
@@ -45,18 +72,31 @@ if not tickers:
 else:
     selected_ticker = st.sidebar.selectbox("Select Ticker", tickers)
     
+    # Timeframe selection
+    timeframe = st.sidebar.radio("Timeframe", ["Intraday (1m, DB)", "Daily (1d, Live)"])
+    
     if selected_ticker:
-        # Load Data
-        df = get_data(selected_ticker)
+        # Load Data based on timeframe
+        if timeframe == "Daily (1d, Live)":
+            df = get_daily_data(selected_ticker)
+            title_prefix = f"Daily (Max)"
+            chart_title = f'{selected_ticker} Daily Candlestick Chart (Max History)'
+        else:
+            df = get_data(selected_ticker)
+            title_prefix = "Intraday (1m)"
+            chart_title = f'{selected_ticker} Intraday Candlestick Chart'
         
         if not df.empty:
-            st.subheader(f"{selected_ticker} - Stock Price History")
+            st.subheader(f"{selected_ticker} - {title_prefix} Stock Price History")
             
             # Date Range Slider (Optional but good for large datasets)
             # st.sidebar.text("Data Points: " + str(len(df)))
 
             # Prepare data for categorical axis (avoid gaps)
-            df['ts_str'] = df['timestamp'].apply(lambda x: x.strftime('%Y-%m-%d %H:%M:%S'))
+            if timeframe == "Daily (1d, Live)":
+                df['ts_str'] = df['timestamp'].apply(lambda x: x.strftime('%Y-%m-%d'))
+            else:
+                df['ts_str'] = df['timestamp'].apply(lambda x: x.strftime('%Y-%m-%d %H:%M:%S'))
 
             # CandleStick Chart
             fig = go.Figure(data=[go.Candlestick(
@@ -68,34 +108,33 @@ else:
                 name=selected_ticker
             )])
 
-            # Add vertical lines for day separation
-            # Since x-axis is categorical, x values are effectively indices (0, 1, 2, ...)
-            # We need to find the indices where the date changes
-            df['date_str'] = df['timestamp'].dt.strftime('%Y-%m-%d')
-            unique_dates = df['date_str'].unique()
-            
-            # Find the indices where the date changes
-            # We iterate through dates and find the first index of each new date (except the first one)
-            for date in unique_dates[1:]:
-                # Find the first occurrence of this date
-                idx = df[df['date_str'] == date].index[0]
-                # In a categorical axis with pandas dataframe source, plotly uses the value itself or index. 
-                # When type='category', plotly maps x values to integers 0, 1, 2... based on their order.
-                # If we passed the column directly, plotly uses the values.
-                # To place a line *between* days, we might simply use the timestamp value of the first record of the new day.
+            # Add vertical lines for day separation only for intraday
+            if timeframe == "Intraday (1m, DB)":
+                df['date_str'] = df['timestamp'].dt.strftime('%Y-%m-%d')
+                unique_dates = df['date_str'].unique()
                 
-                first_record_of_day = df[df['date_str'] == date].iloc[0]['ts_str']
-                
-                fig.add_vline(
-                    x=first_record_of_day, 
-                    line_width=1, 
-                    line_dash="dash", 
-                    line_color="red",
-                    opacity=0.8
-                )
+                # Find the indices where the date changes
+                # We iterate through dates and find the first index of each new date (except the first one)
+                for date in unique_dates[1:]:
+                    # Find the first occurrence of this date
+                    idx = df[df['date_str'] == date].index[0]
+                    # In a categorical axis with pandas dataframe source, plotly uses the value itself or index. 
+                    # When type='category', plotly maps x values to integers 0, 1, 2... based on their order.
+                    # If we passed the column directly, plotly uses the values.
+                    # To place a line *between* days, we might simply use the timestamp value of the first record of the new day.
+                    
+                    first_record_of_day = df[df['date_str'] == date].iloc[0]['ts_str']
+                    
+                    fig.add_vline(
+                        x=first_record_of_day, 
+                        line_width=1, 
+                        line_dash="dash", 
+                        line_color="red",
+                        opacity=0.8
+                    )
 
             fig.update_layout(
-                title=f'{selected_ticker} Candlestick Chart',
+                title=chart_title,
                 yaxis_title='Stock Price',
                 xaxis_title='Date',
                 xaxis_rangeslider_visible=False,
@@ -116,4 +155,4 @@ else:
             with st.expander("View Raw Data"):
                 st.dataframe(df.sort_values(by='timestamp', ascending=False))
         else:
-            st.info("No data available for this ticker.")
+            st.info("No data available for this ticker or timeframe.")
